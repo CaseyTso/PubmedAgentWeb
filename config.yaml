@@ -1,0 +1,56 @@
+# PubMed Literature Monitor Agent - Configuration
+
+pubmed:
+  api_key: ""
+  email: "pubmed_monitor@example.com"
+  tool_name: "pubmed_monitor"
+  search_days: 2
+  batch_size: 200
+
+research:
+  query: >-
+    (CAR-T[tiab] OR "chimeric antigen receptor"[tiab] OR CAR T-cell[tiab])
+    AND
+    ("cytokine release syndrome"[tiab] OR CRS[tiab] OR "cytokine storm"[tiab])
+
+  description: >-
+    My research focuses on the pathogenesis of cytokine release syndrome (CRS)
+    induced by CAR-T cell therapy. I am interested in:
+    - Molecular mechanisms underlying CRS (IL-6, IL-1, TNF-alpha, IFN-gamma signaling)
+    - The role of macrophages, monocytes, and endothelial cells in CRS
+    - Biomarkers for predicting CRS severity
+    - Novel therapeutic strategies for CRS management (tocilizumab, anakinra, ruxolitinib, etc.)
+    - Animal models of CAR-T-induced CRS
+    - Clinical studies reporting CRS outcomes and risk factors
+    I am NOT interested in: manufacturing/production of CAR-T cells, purely clinical
+    efficacy/response rate studies without CRS focus, reviews with no new mechanistic insight.
+
+  min_score: 6
+
+llm:
+  provider: "compatible"
+  api_key: "sk-6ba2602246d04f2f93822b6f7377f47a"
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  temperature: 0.1
+  max_tokens: 512
+
+notify:
+  platform: "feishu"
+  feishu:
+    webhook_url: ""
+    secret: ""
+  wecom:
+    webhook_url: ""
+  max_articles: 20
+
+schedule:
+  cron: "0 8 * * *"
+  timezone: "Asia/Shanghai"
+
+storage:
+  db_path: "data/seen_articles.db"
+
+logging:
+  level: "INFO"
+  file: "logs/agent.log"

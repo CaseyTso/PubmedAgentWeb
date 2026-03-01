@@ -1,0 +1,1617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PubMed 文献监控 Agent — 技术架构设计文档</title>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Noto+Serif+SC:wght@400;600;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- TailwindCSS -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- GSAP + ScrollTrigger -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+
+<!-- ECharts -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+
+<!-- Phosphor Icons -->
+<script src="https://unpkg.com/@phosphor-icons/web@2.0.3"></script>
+
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: {
+        'serif': ['Noto Serif SC', 'Georgia', 'serif'],
+        'sans': ['Inter', 'system-ui', 'sans-serif'],
+        'mono': ['JetBrains Mono', 'monospace'],
+      },
+      colors: {
+        surface: {
+          50: '#f0f4f8',
+          100: '#e1e8ef',
+          200: '#c5d1dc',
+          300: '#a3b4c5',
+          400: '#7d93a8',
+          500: '#5e7689',
+          600: '#4a5f6f',
+          700: '#3d4e5c',
+          800: '#364450',
+          900: '#2e3a44',
+          950: '#1a242d',
+        },
+        accent: {
+          light: '#60a5fa',
+          DEFAULT: '#3b82f6',
+          dark: '#1d4ed8',
+          glow: '#93c5fd',
+        },
+        bio: {
+          green: '#34d399',
+          teal: '#2dd4bf',
+          amber: '#fbbf24',
+          rose: '#fb7185',
+          purple: '#a78bfa',
+        }
+      }
+    }
+  }
+}
+</script>
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-primary: #0c1220;
+    --bg-secondary: #111827;
+    --glass-bg: rgba(17, 24, 39, 0.6);
+    --glass-border: rgba(99, 148, 210, 0.12);
+    --glass-highlight: rgba(147, 197, 253, 0.06);
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --accent: #3b82f6;
+    --accent-glow: rgba(59, 130, 246, 0.3);
+  }
+
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', system-ui, sans-serif;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Mesh gradient background */
+  .mesh-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background:
+      radial-gradient(ellipse at 10% 20%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 10%, rgba(139, 92, 246, 0.06) 0%, transparent 40%),
+      radial-gradient(ellipse at 50% 80%, rgba(45, 212, 191, 0.05) 0%, transparent 50%),
+      radial-gradient(ellipse at 90% 70%, rgba(251, 113, 133, 0.04) 0%, transparent 40%);
+    background-color: var(--bg-primary);
+  }
+
+  /* Noise texture */
+  .noise-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    opacity: 0.025;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 128px 128px;
+  }
+
+  /* Glass card */
+  .glass-card {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow:
+      0 0 0 1px var(--glass-highlight) inset,
+      0 20px 60px -12px rgba(0, 0, 0, 0.4);
+  }
+
+  .glass-card-sm {
+    background: rgba(17, 24, 39, 0.45);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /* Section titles */
+  .section-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0.9;
+  }
+
+  .section-title {
+    font-family: 'Noto Serif SC', serif;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #3b82f6, #8b5cf6, #2dd4bf);
+    z-index: 9999;
+    transform-origin: left;
+    transform: scaleX(0);
+  }
+
+  /* Flow diagram */
+  .flow-node {
+    position: relative;
+    transition: all 0.3s ease;
+  }
+  .flow-node:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px -8px var(--accent-glow);
+  }
+
+  .flow-connector {
+    position: relative;
+  }
+  .flow-connector::after {
+    content: '';
+    display: block;
+    width: 2px;
+    height: 32px;
+    margin: 0 auto;
+    background: linear-gradient(180deg, rgba(59,130,246,0.5), rgba(59,130,246,0.1));
+  }
+
+  .flow-connector-h::after {
+    content: '→';
+    font-size: 1.2rem;
+    color: var(--accent);
+    opacity: 0.6;
+  }
+
+  /* Code block */
+  .code-block {
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(99, 148, 210, 0.08);
+    border-radius: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    line-height: 1.7;
+    overflow-x: auto;
+  }
+
+  .code-block .line-num {
+    color: #475569;
+    user-select: none;
+    min-width: 2.5em;
+    text-align: right;
+    padding-right: 1em;
+    display: inline-block;
+  }
+
+  .code-kw { color: #c084fc; }
+  .code-str { color: #34d399; }
+  .code-comment { color: #475569; font-style: italic; }
+  .code-fn { color: #60a5fa; }
+  .code-type { color: #fbbf24; }
+  .code-op { color: #94a3b8; }
+
+  /* Pipeline timeline */
+  .pipeline-step {
+    position: relative;
+    padding-left: 3rem;
+  }
+  .pipeline-step::before {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 36px;
+    bottom: -20px;
+    width: 2px;
+    background: linear-gradient(180deg, rgba(59,130,246,0.4), rgba(59,130,246,0.05));
+  }
+  .pipeline-step:last-child::before {
+    display: none;
+  }
+  .pipeline-step .step-dot {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--bg-primary);
+  }
+  .pipeline-step .step-dot::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* Table styling */
+  .styled-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  .styled-table th {
+    background: rgba(59, 130, 246, 0.08);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding: 0.75rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid var(--glass-border);
+  }
+  .styled-table th:first-child { border-radius: 8px 0 0 0; }
+  .styled-table th:last-child { border-radius: 0 8px 0 0; }
+  .styled-table td {
+    padding: 0.7rem 1rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    border-bottom: 1px solid rgba(99, 148, 210, 0.06);
+  }
+  .styled-table tr:last-child td { border-bottom: none; }
+  .styled-table tr:hover td {
+    background: rgba(59, 130, 246, 0.03);
+    color: var(--text-primary);
+  }
+
+  /* Badge */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+  .badge-blue {
+    background: rgba(59, 130, 246, 0.12);
+    color: #93c5fd;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+  }
+  .badge-green {
+    background: rgba(52, 211, 153, 0.12);
+    color: #6ee7b7;
+    border: 1px solid rgba(52, 211, 153, 0.2);
+  }
+  .badge-amber {
+    background: rgba(251, 191, 36, 0.12);
+    color: #fcd34d;
+    border: 1px solid rgba(251, 191, 36, 0.2);
+  }
+  .badge-rose {
+    background: rgba(251, 113, 133, 0.12);
+    color: #fda4af;
+    border: 1px solid rgba(251, 113, 133, 0.2);
+  }
+  .badge-purple {
+    background: rgba(167, 139, 250, 0.12);
+    color: #c4b5fd;
+    border: 1px solid rgba(167, 139, 250, 0.2);
+  }
+
+  /* File tree */
+  .file-tree {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    line-height: 2;
+  }
+  .file-tree .folder { color: #60a5fa; }
+  .file-tree .file { color: #94a3b8; }
+  .file-tree .comment { color: #475569; }
+
+  /* Nav dot */
+  .nav-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(148, 163, 184, 0.3);
+    transition: all 0.3s ease;
+    cursor: pointer;
+  }
+  .nav-dot.active {
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
+    height: 24px;
+    border-radius: 4px;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .glass-card { border-radius: 12px; }
+    .flow-horizontal { flex-direction: column; }
+    .flow-connector-h::after { content: '↓'; }
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.15);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.3); }
+
+  /* Smooth scroll */
+  html { scroll-behavior: smooth; }
+
+  /* Animate in */
+  .reveal { opacity: 0; transform: translateY(30px); }
+</style>
+</head>
+
+<body>
+<div class="mesh-bg"></div>
+<div class="noise-overlay"></div>
+<div id="progress-bar"></div>
+
+<!-- Side Navigation -->
+<nav class="fixed right-4 top-1/2 -translate-y-1/2 z-50 hidden lg:flex flex-col items-center gap-3" id="side-nav">
+  <div class="nav-dot active" data-section="hero" title="首页"></div>
+  <div class="nav-dot" data-section="overview" title="系统概述"></div>
+  <div class="nav-dot" data-section="architecture" title="架构设计"></div>
+  <div class="nav-dot" data-section="modules" title="模块设计"></div>
+  <div class="nav-dot" data-section="comparison" title="技术选型"></div>
+  <div class="nav-dot" data-section="cost" title="成本估算"></div>
+  <div class="nav-dot" data-section="deploy" title="部署方案"></div>
+  <div class="nav-dot" data-section="structure" title="项目结构"></div>
+  <div class="nav-dot" data-section="guide" title="使用指南"></div>
+</nav>
+
+<!-- ==================== HERO ==================== -->
+<section id="hero" class="min-h-screen flex items-center justify-center relative px-6">
+  <div class="max-w-4xl mx-auto text-center">
+    <div class="mb-6 reveal">
+      <span class="section-label">Technical Architecture Document</span>
+    </div>
+    <h1 class="section-title text-4xl md:text-6xl lg:text-7xl mb-6 reveal" style="line-height:1.15">
+      PubMed<br>
+      <span class="bg-gradient-to-r from-accent-light via-purple-400 to-bio-teal bg-clip-text text-transparent">文献监控 Agent</span>
+    </h1>
+    <p class="text-lg md:text-xl text-slate-400 max-w-2xl mx-auto mb-4 leading-relaxed reveal" style="font-family:'Inter'">
+      自动追踪 PubMed 新文献，LLM 智能评分筛选，Webhook 实时推送
+    </p>
+    <p class="text-sm text-slate-500 mb-12 reveal" style="font-family:'JetBrains Mono'">
+      研究方向：CAR-T 诱导的细胞因子释放综合征 (CRS) 发病机制
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-3 reveal">
+      <span class="badge badge-blue"><i class="ph ph-database"></i> NCBI E-utilities</span>
+      <span class="badge badge-purple"><i class="ph ph-brain"></i> LLM Scoring</span>
+      <span class="badge badge-green"><i class="ph ph-chat-circle-dots"></i> Feishu / WeCom</span>
+      <span class="badge badge-amber"><i class="ph ph-clock-countdown"></i> APScheduler</span>
+      <span class="badge badge-rose"><i class="ph ph-code"></i> Python 3.12</span>
+    </div>
+    <div class="mt-16 reveal">
+      <i class="ph ph-caret-double-down text-2xl text-slate-500 animate-bounce"></i>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 1. 系统概述 ==================== -->
+<section id="overview" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="mb-4 reveal"><span class="section-label">01 / Overview</span></div>
+    <h2 class="section-title text-3xl md:text-4xl mb-10 reveal">系统概述</h2>
+
+    <div class="grid md:grid-cols-2 gap-6 mb-12">
+      <!-- Problem -->
+      <div class="glass-card p-8 reveal">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center">
+            <i class="ph ph-warning-circle text-xl text-rose-400"></i>
+          </div>
+          <h3 class="font-semibold text-lg">问题</h3>
+        </div>
+        <p class="text-slate-400 leading-relaxed text-[0.92rem]">
+          在 CAR-T 细胞治疗领域，CRS 相关文献每天都在 PubMed 上更新。研究人员需要持续追踪新发表的论文以了解最新进展，但<strong class="text-slate-200">手动检索、阅读摘要、筛选相关文献</strong>是一项耗时且容易遗漏的重复性工作。
+        </p>
+        <div class="mt-5 p-4 rounded-lg bg-black/20 border border-rose-500/10">
+          <p class="text-sm text-slate-500 font-mono">
+            <span class="text-rose-400">▸</span> 每天新增论文 50-100 篇相关领域<br>
+            <span class="text-rose-400">▸</span> 手动筛选耗时 30-60 min/天<br>
+            <span class="text-rose-400">▸</span> 容易遗漏重要进展
+          </p>
+        </div>
+      </div>
+
+      <!-- Solution -->
+      <div class="glass-card p-8 reveal">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+            <i class="ph ph-check-circle text-xl text-emerald-400"></i>
+          </div>
+          <h3 class="font-semibold text-lg">解决方案</h3>
+        </div>
+        <p class="text-slate-400 leading-relaxed text-[0.92rem]">
+          构建一个自动化 Agent，通过 NCBI E-utilities API 获取 PubMed 最新文献，利用<strong class="text-slate-200"> LLM 阅读摘要并智能评分</strong>，筛选出与研究方向高度相关的论文，通过飞书/企业微信 Webhook 实时推送至团队群聊。
+        </p>
+        <div class="mt-5 p-4 rounded-lg bg-black/20 border border-emerald-500/10">
+          <p class="text-sm text-slate-500 font-mono">
+            <span class="text-emerald-400">▸</span> 全自动每日监控，零人工干预<br>
+            <span class="text-emerald-400">▸</span> LLM 理解语义，筛选精度高<br>
+            <span class="text-emerald-400">▸</span> 实时推送至工作群，不错过重要论文
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Core capabilities -->
+    <div class="glass-card p-8 reveal">
+      <h3 class="font-semibold mb-6 text-center text-lg">核心能力</h3>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="text-center p-4">
+          <div class="w-12 h-12 rounded-2xl bg-blue-500/10 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-magnifying-glass text-2xl text-blue-400"></i>
+          </div>
+          <p class="text-sm font-medium mb-1">智能检索</p>
+          <p class="text-xs text-slate-500">PubMed E-utilities<br>布尔检索 + MeSH</p>
+        </div>
+        <div class="text-center p-4">
+          <div class="w-12 h-12 rounded-2xl bg-purple-500/10 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-brain text-2xl text-purple-400"></i>
+          </div>
+          <p class="text-sm font-medium mb-1">语义评分</p>
+          <p class="text-xs text-slate-500">LLM 阅读摘要<br>0-10 相关度打分</p>
+        </div>
+        <div class="text-center p-4">
+          <div class="w-12 h-12 rounded-2xl bg-amber-500/10 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-funnel text-2xl text-amber-400"></i>
+          </div>
+          <p class="text-sm font-medium mb-1">去重过滤</p>
+          <p class="text-xs text-slate-500">SQLite 存储<br>避免重复推送</p>
+        </div>
+        <div class="text-center p-4">
+          <div class="w-12 h-12 rounded-2xl bg-teal-500/10 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-paper-plane-tilt text-2xl text-teal-400"></i>
+          </div>
+          <p class="text-sm font-medium mb-1">实时推送</p>
+          <p class="text-xs text-slate-500">飞书 / 企业微信<br>富文本消息卡片</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 2. 架构设计 ==================== -->
+<section id="architecture" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="mb-4 reveal"><span class="section-label">02 / Architecture</span></div>
+    <h2 class="section-title text-3xl md:text-4xl mb-6 reveal">架构设计</h2>
+    <p class="text-slate-400 mb-12 max-w-2xl reveal">系统采用管道式架构 (Pipeline)，每个阶段独立、可测试、可替换。数据从 PubMed 单向流经各处理模块，最终输出为结构化推送消息。</p>
+
+    <!-- Data Flow Diagram -->
+    <div class="glass-card p-8 md:p-10 mb-12 reveal">
+      <h3 class="section-label mb-8 text-center">Data Pipeline</h3>
+
+      <!-- Horizontal flow for desktop -->
+      <div class="hidden md:flex items-start justify-between gap-2 flow-horizontal">
+        <!-- Step 1 -->
+        <div class="flex-1 flow-node glass-card-sm p-5 text-center">
+          <div class="w-10 h-10 rounded-xl bg-blue-500/15 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-database text-xl text-blue-400"></i>
+          </div>
+          <p class="text-sm font-semibold mb-1">PubMed API</p>
+          <p class="text-xs text-slate-500">ESearch + EFetch</p>
+          <p class="text-[0.65rem] text-slate-600 font-mono mt-2">reldate=2, edat</p>
+        </div>
+        <div class="flex items-center px-1 pt-8 flow-connector-h"><span class="text-blue-400/50 text-lg">→</span></div>
+        <!-- Step 2 -->
+        <div class="flex-1 flow-node glass-card-sm p-5 text-center">
+          <div class="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-funnel text-xl text-amber-400"></i>
+          </div>
+          <p class="text-sm font-semibold mb-1">去重</p>
+          <p class="text-xs text-slate-500">SQLite 过滤</p>
+          <p class="text-[0.65rem] text-slate-600 font-mono mt-2">filter_unseen()</p>
+        </div>
+        <div class="flex items-center px-1 pt-8 flow-connector-h"><span class="text-blue-400/50 text-lg">→</span></div>
+        <!-- Step 3 -->
+        <div class="flex-1 flow-node glass-card-sm p-5 text-center">
+          <div class="w-10 h-10 rounded-xl bg-purple-500/15 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-brain text-xl text-purple-400"></i>
+          </div>
+          <p class="text-sm font-semibold mb-1">LLM 评分</p>
+          <p class="text-xs text-slate-500">摘要 → JSON</p>
+          <p class="text-[0.65rem] text-slate-600 font-mono mt-2">{score, reason}</p>
+        </div>
+        <div class="flex items-center px-1 pt-8 flow-connector-h"><span class="text-blue-400/50 text-lg">→</span></div>
+        <!-- Step 4 -->
+        <div class="flex-1 flow-node glass-card-sm p-5 text-center">
+          <div class="w-10 h-10 rounded-xl bg-rose-500/15 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-sliders-horizontal text-xl text-rose-400"></i>
+          </div>
+          <p class="text-sm font-semibold mb-1">阈值过滤</p>
+          <p class="text-xs text-slate-500">score ≥ 6</p>
+          <p class="text-[0.65rem] text-slate-600 font-mono mt-2">min_score</p>
+        </div>
+        <div class="flex items-center px-1 pt-8 flow-connector-h"><span class="text-blue-400/50 text-lg">→</span></div>
+        <!-- Step 5 -->
+        <div class="flex-1 flow-node glass-card-sm p-5 text-center">
+          <div class="w-10 h-10 rounded-xl bg-teal-500/15 flex items-center justify-center mx-auto mb-3">
+            <i class="ph ph-paper-plane-tilt text-xl text-teal-400"></i>
+          </div>
+          <p class="text-sm font-semibold mb-1">Webhook 推送</p>
+          <p class="text-xs text-slate-500">飞书 / 企微</p>
+          <p class="text-[0.65rem] text-slate-600 font-mono mt-2">POST JSON</p>
+        </div>
+      </div>
+
+      <!-- Vertical flow for mobile -->
+      <div class="md:hidden space-y-2">
+        <div class="flow-node glass-card-sm p-4 flex items-center gap-4">
+          <div class="w-9 h-9 rounded-lg bg-blue-500/15 flex items-center justify-center shrink-0">
+            <i class="ph ph-database text-lg text-blue-400"></i>
+          </div>
+          <div>
+            <p class="text-sm font-semibold">PubMed API</p>
+            <p class="text-xs text-slate-500">ESearch + EFetch (reldate=2)</p>
+          </div>
+        </div>
+        <div class="text-center text-blue-400/40"><i class="ph ph-arrow-down"></i></div>
+        <div class="flow-node glass-card-sm p-4 flex items-center gap-4">
+          <div class="w-9 h-9 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0">
+            <i class="ph ph-funnel text-lg text-amber-400"></i>
+          </div>
+          <div>
+            <p class="text-sm font-semibold">去重过滤</p>
+            <p class="text-xs text-slate-500">SQLite filter_unseen()</p>
+          </div>
+        </div>
+        <div class="text-center text-blue-400/40"><i class="ph ph-arrow-down"></i></div>
+        <div class="flow-node glass-card-sm p-4 flex items-center gap-4">
+          <div class="w-9 h-9 rounded-lg bg-purple-500/15 flex items-center justify-center shrink-0">
+            <i class="ph ph-brain text-lg text-purple-400"></i>
+          </div>
+          <div>
+            <p class="text-sm font-semibold">LLM 评分</p>
+            <p class="text-xs text-slate-500">摘要语义理解 → {score, reason}</p>
+          </div>
+        </div>
+        <div class="text-center text-blue-400/40"><i class="ph ph-arrow-down"></i></div>
+        <div class="flow-node glass-card-sm p-4 flex items-center gap-4">
+          <div class="w-9 h-9 rounded-lg bg-rose-500/15 flex items-center justify-center shrink-0">
+            <i class="ph ph-sliders-horizontal text-lg text-rose-400"></i>
+          </div>
+          <div>
+            <p class="text-sm font-semibold">阈值过滤</p>
+            <p class="text-xs text-slate-500">score ≥ min_score (default: 6)</p>
+          </div>
+        </div>
+        <div class="text-center text-blue-400/40"><i class="ph ph-arrow-down"></i></div>
+        <div class="flow-node glass-card-sm p-4 flex items-center gap-4">
+          <div class="w-9 h-9 rounded-lg bg-teal-500/15 flex items-center justify-center shrink-0">
+            <i class="ph ph-paper-plane-tilt text-lg text-teal-400"></i>
+          </div>
+          <div>
+            <p class="text-sm font-semibold">Webhook 推送</p>
+            <p class="text-xs text-slate-500">飞书 Card / 企微 Markdown</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module overview -->
+    <div class="glass-card overflow-hidden reveal">
+      <table class="styled-table">
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>职责</th>
+            <th>依赖</th>
+            <th>文件</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-blue">PubMed Client</span></td>
+            <td class="text-slate-300">检索新文献、获取元数据与摘要</td>
+            <td class="font-mono text-xs">requests, xml.etree</td>
+            <td class="font-mono text-xs text-blue-300">pubmed_client.py</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">Scorer</span></td>
+            <td class="text-slate-300">LLM 阅读摘要、输出相关度评分</td>
+            <td class="font-mono text-xs">openai</td>
+            <td class="font-mono text-xs text-purple-300">scorer.py</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-green">Notifier</span></td>
+            <td class="text-slate-300">格式化消息、发送 Webhook 通知</td>
+            <td class="font-mono text-xs">requests</td>
+            <td class="font-mono text-xs text-emerald-300">notifier.py</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-amber">Storage</span></td>
+            <td class="text-slate-300">PMID 去重、历史记录追踪</td>
+            <td class="font-mono text-xs">sqlite3 (stdlib)</td>
+            <td class="font-mono text-xs text-amber-300">storage.py</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-rose">Orchestrator</span></td>
+            <td class="text-slate-300">管道编排、定时调度、日志管理</td>
+            <td class="font-mono text-xs">APScheduler, PyYAML</td>
+            <td class="font-mono text-xs text-rose-300">main.py</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 3. 模块详细设计 ==================== -->
+<section id="modules" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="mb-4 reveal"><span class="section-label">03 / Module Design</span></div>
+    <h2 class="section-title text-3xl md:text-4xl mb-12 reveal">模块详细设计</h2>
+
+    <!-- Module A: PubMed Client -->
+    <div class="glass-card p-8 md:p-10 mb-8 reveal">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
+          <i class="ph ph-database text-xl text-blue-400"></i>
+        </div>
+        <div>
+          <h3 class="font-semibold text-lg">PubMed Client</h3>
+          <p class="text-xs text-slate-500 font-mono">src/pubmed_client.py</p>
+        </div>
+      </div>
+
+      <p class="text-slate-400 text-sm mb-6 leading-relaxed">
+        基于 NCBI E-utilities，采用 <strong class="text-slate-200">ESearch → History Server → EFetch</strong> 两步管道模式。
+        使用 <code class="text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded text-xs font-mono">reldate=2</code> +
+        <code class="text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded text-xs font-mono">datetype=edat</code> 检索最近 2 天索引的文章（多取 1 天用于避免边界遗漏）。
+      </p>
+
+      <!-- Pipeline steps -->
+      <div class="space-y-6 mb-8">
+        <div class="pipeline-step">
+          <div class="step-dot"></div>
+          <div>
+            <h4 class="text-sm font-semibold mb-1">Step 1 — ESearch <span class="text-slate-500 font-normal">获取 PMID 列表</span></h4>
+            <div class="code-block p-4 mt-2">
+              <code>
+                <span class="code-comment"># 请求参数</span><br>
+                <span class="code-kw">GET</span> eutils/esearch.fcgi<br>
+                &nbsp;&nbsp;db=<span class="code-str">pubmed</span><br>
+                &nbsp;&nbsp;term=<span class="code-str">(CAR-T OR "chimeric antigen receptor") AND ("cytokine release syndrome" OR CRS)</span><br>
+                &nbsp;&nbsp;reldate=<span class="code-type">2</span> &nbsp;datetype=<span class="code-type">edat</span><br>
+                &nbsp;&nbsp;usehistory=<span class="code-type">y</span> &nbsp;retmode=<span class="code-type">json</span><br>
+                <br>
+                <span class="code-comment"># 响应 → webenv, query_key, count</span>
+              </code>
+            </div>
+          </div>
+        </div>
+        <div class="pipeline-step">
+          <div class="step-dot"></div>
+          <div>
+            <h4 class="text-sm font-semibold mb-1">Step 2 — EFetch <span class="text-slate-500 font-normal">批量获取全文元数据</span></h4>
+            <div class="code-block p-4 mt-2">
+              <code>
+                <span class="code-comment"># 使用 History Server 批量拉取（每批 200 条）</span><br>
+                <span class="code-kw">GET</span> eutils/efetch.fcgi<br>
+                &nbsp;&nbsp;query_key=<span class="code-type">{query_key}</span> &nbsp;WebEnv=<span class="code-type">{webenv}</span><br>
+                &nbsp;&nbsp;retstart=<span class="code-type">0</span> &nbsp;retmax=<span class="code-type">200</span> &nbsp;retmode=<span class="code-type">xml</span><br>
+                <br>
+                <span class="code-comment"># XML 解析 → Article(pmid, title, abstract, authors, journal, doi, keywords)</span>
+              </code>
+            </div>
+          </div>
+        </div>
+        <div class="pipeline-step">
+          <div class="step-dot"></div>
+          <div>
+            <h4 class="text-sm font-semibold mb-1">Rate Limiting <span class="text-slate-500 font-normal">速率控制</span></h4>
+            <p class="text-sm text-slate-400">有 API Key: 10 req/s (delay=0.11s) ｜ 无 Key: 3 req/s (delay=0.35s)</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="p-4 rounded-lg bg-blue-500/5 border border-blue-500/10">
+        <p class="text-xs text-slate-400"><i class="ph ph-info text-blue-400 mr-1"></i><strong class="text-slate-300">关键设计决策：</strong>使用 <code class="font-mono text-blue-300">edat</code>（Entrez Date，即 PubMed 收录日期）而非 <code class="font-mono">pdat</code>（发表日期），因为论文可能在发表数周后才被 PubMed 索引。<code class="font-mono text-blue-300">reldate=2</code> 提供一天的重叠窗口，配合 SQLite 去重避免遗漏。</p>
+      </div>
+    </div>
+
+    <!-- Module B: Scorer -->
+    <div class="glass-card p-8 md:p-10 mb-8 reveal">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center">
+          <i class="ph ph-brain text-xl text-purple-400"></i>
+        </div>
+        <div>
+          <h3 class="font-semibold text-lg">Relevance Scorer</h3>
+          <p class="text-xs text-slate-500 font-mono">src/scorer.py</p>
+        </div>
+      </div>
+
+      <p class="text-slate-400 text-sm mb-6 leading-relaxed">
+        将研究者画像 (research profile) 和论文摘要一起发送给 LLM，要求以结构化 JSON 输出相关度评分和理由。
+      </p>
+
+      <div class="grid md:grid-cols-2 gap-6 mb-6">
+        <div>
+          <h4 class="text-sm font-semibold mb-3">Prompt 结构</h4>
+          <div class="code-block p-4 text-xs">
+            <code>
+              <span class="code-kw">System:</span> 你是生物医学研究助手…<br>
+              &nbsp;&nbsp;评分标准 0-10 (含描述)<br>
+              &nbsp;&nbsp;输出格式: <span class="code-str">{"score": int, "reason": str}</span><br>
+              <br>
+              <span class="code-kw">User:</span><br>
+              &nbsp;&nbsp;<span class="code-comment">## 研究者画像</span><br>
+              &nbsp;&nbsp;{research_description}<br>
+              &nbsp;&nbsp;<span class="code-comment">## 待评估文章</span><br>
+              &nbsp;&nbsp;Title: ... Abstract: ...
+            </code>
+          </div>
+        </div>
+        <div>
+          <h4 class="text-sm font-semibold mb-3">评分标准</h4>
+          <div class="space-y-2">
+            <div class="flex items-center gap-3 p-2 rounded-lg bg-red-500/5">
+              <span class="font-mono text-xs text-red-300 w-8">0-3</span>
+              <span class="text-sm text-slate-400">边缘相关，仅涉及部分关键词</span>
+            </div>
+            <div class="flex items-center gap-3 p-2 rounded-lg bg-amber-500/5">
+              <span class="font-mono text-xs text-amber-300 w-8">4-5</span>
+              <span class="text-sm text-slate-400">中等相关，主题重叠但非直接有用</span>
+            </div>
+            <div class="flex items-center gap-3 p-2 rounded-lg bg-emerald-500/5">
+              <span class="font-mono text-xs text-emerald-300 w-8">6-7</span>
+              <span class="text-sm text-slate-400">高度相关，直接涉及研究方向</span>
+            </div>
+            <div class="flex items-center gap-3 p-2 rounded-lg bg-blue-500/5">
+              <span class="font-mono text-xs text-blue-300 w-8">8-10</span>
+              <span class="text-sm text-slate-400">核心论文，直接回答关键研究问题</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="p-4 rounded-lg bg-purple-500/5 border border-purple-500/10">
+        <p class="text-xs text-slate-400"><i class="ph ph-info text-purple-400 mr-1"></i><strong class="text-slate-300">容错设计：</strong>无摘要的文章自动跳过 LLM 评分（score=0）。JSON 解析失败时返回 score=0 而非抛出异常。摘要超过 3000 字符自动截断以控制 token 用量。</p>
+      </div>
+    </div>
+
+    <!-- Module C: Notifier -->
+    <div class="glass-card p-8 md:p-10 mb-8 reveal">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center">
+          <i class="ph ph-paper-plane-tilt text-xl text-teal-400"></i>
+        </div>
+        <div>
+          <h3 class="font-semibold text-lg">Notification Module</h3>
+          <p class="text-xs text-slate-500 font-mono">src/notifier.py</p>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 mb-6">
+        <!-- Feishu -->
+        <div class="glass-card-sm p-5">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="badge badge-blue">飞书 Feishu</span>
+          </div>
+          <ul class="text-sm text-slate-400 space-y-2">
+            <li class="flex items-start gap-2"><span class="text-blue-400 mt-0.5">▸</span>消息类型: <code class="font-mono text-xs text-blue-300">interactive</code> (Card Schema 2.0)</li>
+            <li class="flex items-start gap-2"><span class="text-blue-400 mt-0.5">▸</span>卡片 Header + Markdown Body</li>
+            <li class="flex items-start gap-2"><span class="text-blue-400 mt-0.5">▸</span>请求体限制: 20 KB</li>
+            <li class="flex items-start gap-2"><span class="text-blue-400 mt-0.5">▸</span>频率限制: 5 req/s, 100 req/min</li>
+            <li class="flex items-start gap-2"><span class="text-blue-400 mt-0.5">▸</span>可选: HMAC-SHA256 签名验证</li>
+          </ul>
+        </div>
+
+        <!-- WeCom -->
+        <div class="glass-card-sm p-5">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="badge badge-green">企业微信 WeCom</span>
+          </div>
+          <ul class="text-sm text-slate-400 space-y-2">
+            <li class="flex items-start gap-2"><span class="text-emerald-400 mt-0.5">▸</span>消息类型: <code class="font-mono text-xs text-emerald-300">markdown</code></li>
+            <li class="flex items-start gap-2"><span class="text-emerald-400 mt-0.5">▸</span>支持加粗、链接、列表、引用</li>
+            <li class="flex items-start gap-2"><span class="text-emerald-400 mt-0.5">▸</span>内容限制: 4096 bytes (UTF-8)</li>
+            <li class="flex items-start gap-2"><span class="text-emerald-400 mt-0.5">▸</span>频率限制: 20 req/min</li>
+            <li class="flex items-start gap-2"><span class="text-emerald-400 mt-0.5">▸</span>超长消息自动截断 + 溢出提示</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="p-4 rounded-lg bg-teal-500/5 border border-teal-500/10">
+        <p class="text-xs text-slate-400"><i class="ph ph-info text-teal-400 mr-1"></i><strong class="text-slate-300">工厂模式：</strong><code class="font-mono text-teal-300">create_notifier(config)</code> 根据配置自动创建对应的通知器实例列表，支持同时推送多个渠道（<code class="font-mono">platform: "both"</code>）。</p>
+      </div>
+    </div>
+
+    <!-- Module D: Storage -->
+    <div class="glass-card p-8 md:p-10 reveal">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
+          <i class="ph ph-hard-drives text-xl text-amber-400"></i>
+        </div>
+        <div>
+          <h3 class="font-semibold text-lg">Deduplication Storage</h3>
+          <p class="text-xs text-slate-500 font-mono">src/storage.py</p>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="text-sm font-semibold mb-3">SQLite Schema</h4>
+          <div class="code-block p-4 text-xs">
+            <code>
+              <span class="code-kw">CREATE TABLE</span> <span class="code-fn">seen_articles</span> (<br>
+              &nbsp;&nbsp;pmid &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-type">TEXT PRIMARY KEY</span>,<br>
+              &nbsp;&nbsp;title &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-type">TEXT</span>,<br>
+              &nbsp;&nbsp;score &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="code-type">INTEGER</span>,<br>
+              &nbsp;&nbsp;first_seen &nbsp;<span class="code-type">TEXT</span><br>
+              );
+            </code>
+          </div>
+        </div>
+        <div>
+          <h4 class="text-sm font-semibold mb-3">核心方法</h4>
+          <div class="space-y-2">
+            <div class="p-3 rounded-lg bg-black/20">
+              <code class="text-xs font-mono text-amber-300">filter_unseen(pmids)</code>
+              <p class="text-xs text-slate-500 mt-1">输入 PMID 列表，返回未见过的子集</p>
+            </div>
+            <div class="p-3 rounded-lg bg-black/20">
+              <code class="text-xs font-mono text-amber-300">mark_batch_seen(articles)</code>
+              <p class="text-xs text-slate-500 mt-1">批量标记为已处理 (INSERT OR IGNORE)</p>
+            </div>
+            <div class="p-3 rounded-lg bg-black/20">
+              <code class="text-xs font-mono text-amber-300">count()</code>
+              <p class="text-xs text-slate-500 mt-1">返回已追踪的 PMID 总数</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 4. 技术选型对比 ==================== -->
+<section id="comparison" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="mb-4 reveal"><span class="section-label">04 / Comparison</span></div>
+    <h2 class="section-title text-3xl md:text-4xl mb-12 reveal">技术选型对比</h2>
+
+    <!-- Chart: Keyword vs LLM -->
+    <div class="glass-card p-8 md:p-10 mb-8 reveal">
+      <h3 class="font-semibold mb-2">筛选策略对比：关键词匹配 vs LLM 语义评分</h3>
+      <p class="text-sm text-slate-500 mb-6">综合准确率、成本、灵活性三个维度评估</p>
+      <div id="chart-comparison" style="width:100%;height:360px;"></div>
+
+      <div class="mt-6 grid md:grid-cols-2 gap-4">
+        <div class="p-4 rounded-lg bg-black/20">
+          <h4 class="text-sm font-semibold mb-2 text-slate-300">关键词匹配</h4>
+          <p class="text-xs text-slate-500 leading-relaxed">基于布尔查询和 MeSH 词表过滤。速度快、零成本，但无法理解语义——无法区分 "CRS as an adverse event" 和 "CRS pathogenesis mechanism"，容易产生大量误报。</p>
+        </div>
+        <div class="p-4 rounded-lg bg-purple-500/5 border border-purple-500/10">
+          <h4 class="text-sm font-semibold mb-2 text-purple-300">LLM 语义评分 ✓</h4>
+          <p class="text-xs text-slate-400 leading-relaxed">理解自然语言描述的研究兴趣，阅读摘要后做出上下文感知的判断。能区分"仅提及 CRS"和"深入研究 CRS 机制"。成本极低 ($0.01-0.05/天)，是本系统的选择。</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comparison Table -->
+    <div class="glass-card overflow-hidden mb-8 reveal">
+      <div class="p-6 pb-0">
+        <h3 class="font-semibold mb-1">通知方式对比</h3>
+        <p class="text-sm text-slate-500 mb-4">Email vs Webhook 推送</p>
+      </div>
+      <table class="styled-table">
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>Email</th>
+            <th>Webhook (飞书/企微) ✓</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="text-slate-300 font-medium">实时性</td>
+            <td>可能进垃圾箱，延迟不定</td>
+            <td class="text-emerald-300">秒级送达，群聊实时可见</td>
+          </tr>
+          <tr>
+            <td class="text-slate-300 font-medium">富文本</td>
+            <td>HTML 模板兼容性差异大</td>
+            <td class="text-emerald-300">Markdown / 卡片原生支持</td>
+          </tr>
+          <tr>
+            <td class="text-slate-300 font-medium">协作性</td>
+            <td>单人接收，难以讨论</td>
+            <td class="text-emerald-300">群聊推送，可即时讨论</td>
+          </tr>
+          <tr>
+            <td class="text-slate-300 font-medium">配置复杂度</td>
+            <td>需 SMTP 配置，可能需密码</td>
+            <td class="text-emerald-300">一个 URL 即可，无需认证</td>
+          </tr>
+          <tr>
+            <td class="text-slate-300 font-medium">成本</td>
+            <td>免费 (但 SMTP 限额)</td>
+            <td class="text-emerald-300">完全免费</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Date strategy -->
+    <div class="glass-card p-8 mb-8 reveal">
+      <h3 class="font-semibold mb-1">日期策略对比</h3>
+      <p class="text-sm text-slate-500 mb-6"><code class="font-mono text-xs">reldate</code> vs <code class="font-mono text-xs">mindate/maxdate</code></p>
+      <div class="grid md:grid-cols-2 gap-6">
+        <div class="p-5 rounded-lg bg-blue-500/5 border border-blue-500/10">
+          <h4 class="text-sm font-semibold mb-2 text-blue-300">reldate=2 + edat ✓</h4>
+          <ul class="text-xs text-slate-400 space-y-1.5">
+            <li>▸ 相对日期，无需计算昨天的具体日期</li>
+            <li>▸ 2 天窗口提供 1 天重叠，避免边界遗漏</li>
+            <li>▸ 配合 SQLite 去重，重叠不会产生重复推送</li>
+            <li>▸ 对时区和服务器时间偏差有天然容错</li>
+          </ul>
+        </div>
+        <div class="p-5 rounded-lg bg-black/20">
+          <h4 class="text-sm font-semibold mb-2 text-slate-400">mindate/maxdate</h4>
+          <ul class="text-xs text-slate-500 space-y-1.5">
+            <li>▸ 绝对日期，需每次计算具体日期字符串</li>
+            <li>▸ 精确但无重叠，边界条目可能遗漏</li>
+            <li>▸ 需处理时区转换 (NCBI 使用 US Eastern)</li>
+            <li>▸ 适合回补历史数据的场景</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 5. 成本估算 ==================== -->
+<section id="cost" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="mb-4 reveal"><span class="section-label">05 / Cost Analysis</span></div>
+    <h2 class="section-title text-3xl md:text-4xl mb-12 reveal">成本估算</h2>
+
+    <div class="grid md:grid-cols-3 gap-6 mb-10 reveal">
+      <!-- PubMed -->
+      <div class="glass-card p-6 text-center">
+        <div class="w-12 h-12 rounded-2xl bg-blue-500/10 flex items-center justify-center mx-auto mb-4">
+          <i class="ph ph-database text-2xl text-blue-400"></i>
+        </div>
+        <h3 class="font-semibold mb-1">PubMed API</h3>
+        <p class="text-3xl font-bold text-emerald-400 font-mono">$0</p>
+        <p class="text-xs text-slate-500 mt-2">免费使用<br>API Key: 10 req/s</p>
+      </div>
+
+      <!-- LLM -->
+      <div class="glass-card p-6 text-center">
+        <div class="w-12 h-12 rounded-2xl bg-purple-500/10 flex items-center justify-center mx-auto mb-4">
+          <i class="ph ph-brain text-2xl text-purple-400"></i>
+        </div>
+        <h3 class="font-semibold mb-1">LLM 评分</h3>
+        <p class="text-3xl font-bold text-amber-400 font-mono">~$1</p>
+        <p class="text-xs text-slate-500 mt-2">每月成本 (gpt-4o-mini)<br>~50 articles/day</p>
+      </div>
+
+      <!-- Webhook -->
+      <div class="glass-card p-6 text-center">
+        <div class="w-12 h-12 rounded-2xl bg-teal-500/10 flex items-center justify-center mx-auto mb-4">
+          <i class="ph ph-paper-plane-tilt text-2xl text-teal-400"></i>
+        </div>
+        <h3 class="font-semibold mb-1">Webhook 推送</h3>
+        <p class="text-3xl font-bold text-emerald-400 font-mono">$0</p>
+        <p class="text-xs text-slate-500 mt-2">飞书 / 企微<br>免费无限使用</p>
+      </div>
+    </div>
+
+    <!-- Cost chart -->
+    <div class="glass-card p-8 md:p-10 mb-8 reveal">
+      <h3 class="font-semibold mb-2">LLM 月度成本对比</h3>
+      <p class="text-sm text-slate-500 mb-6">假设每天约 50 篇文章需要评分 (每篇约 800 tokens)</p>
+      <div id="chart-cost" style="width:100%;height:320px;"></div>
+    </div>
+
+    <!-- Cost breakdown -->
+    <div class="glass-card overflow-hidden reveal">
+      <div class="p-6 pb-0">
+        <h3 class="font-semibold mb-1">详细成本拆解</h3>
+        <p class="text-sm text-slate-500 mb-4">基于每日 50 篇文章、每篇约 800 input tokens + 100 output tokens</p>
+      </div>
+      <table class="styled-table">
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th>Input 价格</th>
+            <th>Output 价格</th>
+            <th>日成本</th>
+            <th>月成本</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-green">gpt-4o-mini</span></td>
+            <td class="font-mono text-xs">$0.15 / 1M tokens</td>
+            <td class="font-mono text-xs">$0.60 / 1M tokens</td>
+            <td class="font-mono text-xs text-emerald-300">~$0.009</td>
+            <td class="font-mono text-xs text-emerald-300">~$0.27</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-blue">DeepSeek-Chat</span></td>
+            <td class="font-mono text-xs">$0.07 / 1M tokens</td>
+            <td class="font-mono text-xs">$0.27 / 1M tokens</td>
+            <td class="font-mono text-xs text-emerald-300">~$0.004</td>
+            <td class="font-mono text-xs text-emerald-300">~$0.12</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-purple">gpt-4o</span></td>
+            <td class="font-mono text-xs">$2.50 / 1M tokens</td>
+            <td class="font-mono text-xs">$10.0 / 1M tokens</td>
+            <td class="font-mono text-xs text-amber-300">~$0.15</td>
+            <td class="font-mono text-xs text-amber-300">~$4.50</td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-rose">Claude Haiku</span></td>
+            <td class="font-mono text-xs">$0.25 / 1M tokens</td>
+            <td class="font-mono text-xs">$1.25 / 1M tokens</td>
+            <td class="font-mono text-xs text-emerald-300">~$0.016</td>
+            <td class="font-mono text-xs text-emerald-300">~$0.48</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 6. 部署方案 ==================== -->
+<section id="deploy" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="mb-4 reveal"><span class="section-label">06 / Deployment</span></div>
+    <h2 class="section-title text-3xl md:text-4xl mb-12 reveal">部署方案</h2>
+
+    <div class="grid md:grid-cols-3 gap-6 reveal">
+      <!-- Option A -->
+      <div class="glass-card p-7 flex flex-col">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+            <i class="ph ph-terminal text-xl text-emerald-400"></i>
+          </div>
+          <div>
+            <h3 class="font-semibold">本地 Cron</h3>
+            <span class="badge badge-green text-[0.6rem]">最简单</span>
+          </div>
+        </div>
+        <ul class="text-sm text-slate-400 space-y-2 flex-1">
+          <li class="flex items-start gap-2"><span class="text-emerald-400">▸</span>系统 crontab 直接调度</li>
+          <li class="flex items-start gap-2"><span class="text-emerald-400">▸</span>无额外依赖，开箱即用</li>
+          <li class="flex items-start gap-2"><span class="text-emerald-400">▸</span>适合个人使用</li>
+        </ul>
+        <div class="code-block p-3 mt-4 text-xs">
+          <code>
+            <span class="code-comment"># crontab -e</span><br>
+            <span class="code-str">0 8 * * *</span> cd /app && python main.py -c config.yaml
+          </code>
+        </div>
+      </div>
+
+      <!-- Option B -->
+      <div class="glass-card p-7 flex flex-col border-blue-500/20">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
+            <i class="ph ph-package text-xl text-blue-400"></i>
+          </div>
+          <div>
+            <h3 class="font-semibold">Docker 容器</h3>
+            <span class="badge badge-blue text-[0.6rem]">推荐</span>
+          </div>
+        </div>
+        <ul class="text-sm text-slate-400 space-y-2 flex-1">
+          <li class="flex items-start gap-2"><span class="text-blue-400">▸</span>内置 APScheduler 守护进程</li>
+          <li class="flex items-start gap-2"><span class="text-blue-400">▸</span>环境隔离，可移植性强</li>
+          <li class="flex items-start gap-2"><span class="text-blue-400">▸</span>挂载 volume 持久化 SQLite</li>
+        </ul>
+        <div class="code-block p-3 mt-4 text-xs">
+          <code>
+            <span class="code-fn">docker</span> build -t pubmed-agent .<br>
+            <span class="code-fn">docker</span> run -d \<br>
+            &nbsp;&nbsp;-v ./data:/app/data \<br>
+            &nbsp;&nbsp;-v ./config.yaml:/app/config.yaml \<br>
+            &nbsp;&nbsp;pubmed-agent
+          </code>
+        </div>
+      </div>
+
+      <!-- Option C -->
+      <div class="glass-card p-7 flex flex-col">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center">
+            <i class="ph ph-cloud text-xl text-purple-400"></i>
+          </div>
+          <div>
+            <h3 class="font-semibold">Serverless</h3>
+            <span class="badge badge-purple text-[0.6rem]">云端</span>
+          </div>
+        </div>
+        <ul class="text-sm text-slate-400 space-y-2 flex-1">
+          <li class="flex items-start gap-2"><span class="text-purple-400">▸</span>AWS Lambda / 腾讯云 SCF</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400">▸</span>按调用付费，闲时零成本</li>
+          <li class="flex items-start gap-2"><span class="text-purple-400">▸</span>需云端数据库替代 SQLite</li>
+        </ul>
+        <div class="code-block p-3 mt-4 text-xs">
+          <code>
+            <span class="code-comment"># 触发器: CloudWatch Events</span><br>
+            <span class="code-str">cron(0 0 * * ? *)</span><br>
+            <span class="code-comment"># UTC 00:00 = 北京 08:00</span>
+          </code>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 7. 项目结构 ==================== -->
+<section id="structure" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="mb-4 reveal"><span class="section-label">07 / Project Structure</span></div>
+    <h2 class="section-title text-3xl md:text-4xl mb-12 reveal">项目结构</h2>
+
+    <div class="grid md:grid-cols-2 gap-8">
+      <!-- File tree -->
+      <div class="glass-card p-8 reveal">
+        <h3 class="font-semibold mb-5">目录结构</h3>
+        <div class="file-tree">
+          <div class="folder">pubmed-agent/</div>
+          <div class="ml-5">
+            <div class="file">├── <span class="text-rose-300">main.py</span> <span class="comment ml-4"># 入口 & 管道编排</span></div>
+            <div class="file">├── <span class="text-amber-300">config.example.yaml</span> <span class="comment ml-4"># 配置模板</span></div>
+            <div class="file">├── <span class="text-slate-400">requirements.txt</span></div>
+            <div class="file">├── <span class="text-blue-300">Dockerfile</span></div>
+            <div class="folder">├── src/</div>
+            <div class="ml-5">
+              <div class="file">│&nbsp;&nbsp; ├── __init__.py</div>
+              <div class="file">│&nbsp;&nbsp; ├── <span class="text-blue-300">pubmed_client.py</span> <span class="comment ml-4"># NCBI API</span></div>
+              <div class="file">│&nbsp;&nbsp; ├── <span class="text-purple-300">scorer.py</span> <span class="comment ml-4"># LLM 评分</span></div>
+              <div class="file">│&nbsp;&nbsp; ├── <span class="text-teal-300">notifier.py</span> <span class="comment ml-4"># Webhook</span></div>
+              <div class="file">│&nbsp;&nbsp; └── <span class="text-amber-300">storage.py</span> <span class="comment ml-4"># SQLite 去重</span></div>
+            </div>
+            <div class="folder">├── data/ <span class="comment ml-4"># 运行时数据</span></div>
+            <div class="ml-5">
+              <div class="file">│&nbsp;&nbsp; └── seen_articles.db</div>
+            </div>
+            <div class="folder">└── logs/</div>
+            <div class="ml-5">
+              <div class="file">&nbsp;&nbsp;&nbsp; └── agent.log</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dependencies -->
+      <div class="glass-card p-8 reveal">
+        <h3 class="font-semibold mb-5">依赖清单</h3>
+        <div class="space-y-3">
+          <div class="p-3 rounded-lg bg-black/20 flex items-center justify-between">
+            <div>
+              <code class="font-mono text-sm text-blue-300">requests</code>
+              <p class="text-xs text-slate-500 mt-0.5">HTTP 客户端 — PubMed API + Webhook</p>
+            </div>
+            <span class="font-mono text-xs text-slate-600">≥2.31</span>
+          </div>
+          <div class="p-3 rounded-lg bg-black/20 flex items-center justify-between">
+            <div>
+              <code class="font-mono text-sm text-purple-300">openai</code>
+              <p class="text-xs text-slate-500 mt-0.5">OpenAI Python SDK — LLM 调用</p>
+            </div>
+            <span class="font-mono text-xs text-slate-600">≥1.12</span>
+          </div>
+          <div class="p-3 rounded-lg bg-black/20 flex items-center justify-between">
+            <div>
+              <code class="font-mono text-sm text-amber-300">PyYAML</code>
+              <p class="text-xs text-slate-500 mt-0.5">YAML 配置文件解析</p>
+            </div>
+            <span class="font-mono text-xs text-slate-600">≥6.0</span>
+          </div>
+          <div class="p-3 rounded-lg bg-black/20 flex items-center justify-between">
+            <div>
+              <code class="font-mono text-sm text-rose-300">APScheduler</code>
+              <p class="text-xs text-slate-500 mt-0.5">Python 任务调度 — Cron 表达式</p>
+            </div>
+            <span class="font-mono text-xs text-slate-600">≥3.10</span>
+          </div>
+          <div class="p-3 rounded-lg bg-black/20 flex items-center justify-between">
+            <div>
+              <code class="font-mono text-sm text-slate-400">sqlite3</code>
+              <p class="text-xs text-slate-500 mt-0.5">标准库 — 无需安装</p>
+            </div>
+            <span class="font-mono text-xs text-slate-600">stdlib</span>
+          </div>
+          <div class="p-3 rounded-lg bg-black/20 flex items-center justify-between">
+            <div>
+              <code class="font-mono text-sm text-slate-400">xml.etree</code>
+              <p class="text-xs text-slate-500 mt-0.5">标准库 — XML 解析</p>
+            </div>
+            <span class="font-mono text-xs text-slate-600">stdlib</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 8. 使用指南 ==================== -->
+<section id="guide" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="mb-4 reveal"><span class="section-label">08 / Quick Start</span></div>
+    <h2 class="section-title text-3xl md:text-4xl mb-12 reveal">使用指南</h2>
+
+    <div class="space-y-6">
+      <!-- Step 1 -->
+      <div class="glass-card p-8 reveal">
+        <div class="flex items-center gap-4 mb-4">
+          <div class="w-8 h-8 rounded-lg bg-blue-500/15 flex items-center justify-center font-mono text-sm text-blue-400 font-bold">1</div>
+          <h3 class="font-semibold">安装依赖</h3>
+        </div>
+        <div class="code-block p-4">
+          <code>
+            <span class="code-fn">pip</span> install -r requirements.txt
+          </code>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="glass-card p-8 reveal">
+        <div class="flex items-center gap-4 mb-4">
+          <div class="w-8 h-8 rounded-lg bg-blue-500/15 flex items-center justify-center font-mono text-sm text-blue-400 font-bold">2</div>
+          <h3 class="font-semibold">配置文件</h3>
+        </div>
+        <div class="code-block p-4 mb-4">
+          <code>
+            <span class="code-fn">cp</span> config.example.yaml config.yaml<br>
+            <span class="code-fn">vim</span> config.yaml &nbsp;&nbsp;<span class="code-comment"># 填入你的 API Keys</span>
+          </code>
+        </div>
+        <p class="text-sm text-slate-400">需要填写的关键配置：</p>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+          <div class="p-3 rounded-lg bg-black/20 text-center">
+            <p class="font-mono text-xs text-blue-300">pubmed.api_key</p>
+            <p class="text-[0.65rem] text-slate-500 mt-1">NCBI 账户获取 (可选)</p>
+          </div>
+          <div class="p-3 rounded-lg bg-black/20 text-center">
+            <p class="font-mono text-xs text-purple-300">llm.api_key</p>
+            <p class="text-[0.65rem] text-slate-500 mt-1">OpenAI / DeepSeek Key</p>
+          </div>
+          <div class="p-3 rounded-lg bg-black/20 text-center">
+            <p class="font-mono text-xs text-teal-300">notify.feishu.webhook_url</p>
+            <p class="text-[0.65rem] text-slate-500 mt-1">飞书群聊机器人 URL</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="glass-card p-8 reveal">
+        <div class="flex items-center gap-4 mb-4">
+          <div class="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center font-mono text-sm text-amber-400 font-bold">3</div>
+          <h3 class="font-semibold">试运行 (Dry Run)</h3>
+        </div>
+        <div class="code-block p-4 mb-3">
+          <code>
+            <span class="code-fn">python</span> main.py --config config.yaml <span class="code-str">--dry-run</span>
+          </code>
+        </div>
+        <p class="text-xs text-slate-500">Dry-run 模式会执行完整的检索 + 评分流程，但不发送 webhook 通知，仅在终端输出筛选结果。用于验证配置和查询是否正确。</p>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="glass-card p-8 reveal">
+        <div class="flex items-center gap-4 mb-4">
+          <div class="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center font-mono text-sm text-emerald-400 font-bold">4</div>
+          <h3 class="font-semibold">启动定时服务</h3>
+        </div>
+        <div class="code-block p-4 mb-3">
+          <code>
+            <span class="code-comment"># 方式 A: 守护进程模式 (内置 APScheduler)</span><br>
+            <span class="code-fn">python</span> main.py --config config.yaml <span class="code-str">--daemon</span><br>
+            <br>
+            <span class="code-comment"># 方式 B: Docker (推荐)</span><br>
+            <span class="code-fn">docker</span> build -t pubmed-agent .<br>
+            <span class="code-fn">docker</span> run -d --name pubmed-agent \<br>
+            &nbsp;&nbsp;-v $(pwd)/data:/app/data \<br>
+            &nbsp;&nbsp;-v $(pwd)/config.yaml:/app/config.yaml \<br>
+            &nbsp;&nbsp;--restart unless-stopped \<br>
+            &nbsp;&nbsp;pubmed-agent
+          </code>
+        </div>
+        <p class="text-xs text-slate-500">默认每天早上 8:00 (Asia/Shanghai) 自动运行。可在 config.yaml 的 <code class="font-mono text-emerald-300">schedule.cron</code> 中自定义。</p>
+      </div>
+    </div>
+
+    <!-- Footer note -->
+    <div class="mt-16 text-center reveal">
+      <div class="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/5 border border-white/10">
+        <i class="ph ph-github-logo text-lg text-slate-400"></i>
+        <span class="text-sm text-slate-400">Python 3.12+ &nbsp;|&nbsp; MIT License</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="py-12 px-6 border-t border-white/5">
+  <div class="max-w-5xl mx-auto text-center">
+    <p class="text-xs text-slate-600 font-mono">
+      PubMed Literature Monitor Agent — Technical Architecture Document
+    </p>
+    <p class="text-xs text-slate-700 mt-1 font-mono">
+      Generated 2026-03-01
+    </p>
+  </div>
+</footer>
+
+<!-- ==================== SCRIPTS ==================== -->
+<script>
+  // === GSAP Animations ===
+  gsap.registerPlugin(ScrollTrigger);
+
+  // Progress bar
+  gsap.to('#progress-bar', {
+    scaleX: 1,
+    ease: 'none',
+    scrollTrigger: {
+      trigger: 'body',
+      start: 'top top',
+      end: 'bottom bottom',
+      scrub: 0.3,
+    }
+  });
+
+  // Reveal animations
+  const reveals = document.querySelectorAll('.reveal');
+  reveals.forEach((el, i) => {
+    gsap.to(el, {
+      opacity: 1,
+      y: 0,
+      duration: 0.8,
+      ease: 'power2.out',
+      scrollTrigger: {
+        trigger: el,
+        start: 'top 88%',
+        once: true,
+      }
+    });
+  });
+
+  // Side navigation
+  const sections = ['hero', 'overview', 'architecture', 'modules', 'comparison', 'cost', 'deploy', 'structure', 'guide'];
+  const navDots = document.querySelectorAll('.nav-dot');
+
+  sections.forEach((id, i) => {
+    ScrollTrigger.create({
+      trigger: `#${id}`,
+      start: 'top center',
+      end: 'bottom center',
+      onEnter: () => updateNav(i),
+      onEnterBack: () => updateNav(i),
+    });
+  });
+
+  function updateNav(index) {
+    navDots.forEach((dot, i) => {
+      dot.classList.toggle('active', i === index);
+    });
+  }
+
+  navDots.forEach((dot, i) => {
+    dot.addEventListener('click', () => {
+      document.getElementById(sections[i]).scrollIntoView({ behavior: 'smooth' });
+    });
+  });
+
+  // === ECharts ===
+  // Theme colors
+  const chartColors = {
+    blue: '#60a5fa',
+    purple: '#a78bfa',
+    green: '#34d399',
+    amber: '#fbbf24',
+    rose: '#fb7185',
+    teal: '#2dd4bf',
+    gridLine: 'rgba(148, 163, 184, 0.06)',
+    axisLabel: '#64748b',
+    tooltipBg: 'rgba(15, 23, 42, 0.95)',
+  };
+
+  // Comparison Radar Chart
+  const chartComparison = echarts.init(document.getElementById('chart-comparison'), null, { renderer: 'svg' });
+  chartComparison.setOption({
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: chartColors.tooltipBg,
+      borderColor: 'rgba(99, 148, 210, 0.15)',
+      borderWidth: 1,
+      textStyle: { color: '#e2e8f0', fontFamily: 'Inter', fontSize: 12 },
+      formatter: function(params) {
+        return `<div style="font-weight:600;margin-bottom:4px">${params.name}</div>` +
+          `准确率: ${params.value[0]}<br>` +
+          `灵活性: ${params.value[1]}<br>` +
+          `成本效益: ${params.value[2]}<br>` +
+          `语义理解: ${params.value[3]}<br>` +
+          `配置简易度: ${params.value[4]}`;
+      }
+    },
+    legend: {
+      bottom: 0,
+      textStyle: { color: chartColors.axisLabel, fontFamily: 'Inter', fontSize: 12 },
+      itemGap: 24,
+    },
+    radar: {
+      indicator: [
+        { name: '准确率', max: 10 },
+        { name: '灵活性', max: 10 },
+        { name: '成本效益', max: 10 },
+        { name: '语义理解', max: 10 },
+        { name: '配置简易度', max: 10 },
+      ],
+      shape: 'circle',
+      radius: '65%',
+      splitNumber: 4,
+      axisName: {
+        color: chartColors.axisLabel,
+        fontFamily: 'Inter',
+        fontSize: 11,
+      },
+      splitArea: {
+        areaStyle: { color: ['rgba(59,130,246,0.02)', 'rgba(59,130,246,0.04)', 'rgba(59,130,246,0.02)', 'rgba(59,130,246,0.04)'] }
+      },
+      splitLine: { lineStyle: { color: chartColors.gridLine } },
+      axisLine: { lineStyle: { color: chartColors.gridLine } },
+    },
+    series: [{
+      type: 'radar',
+      data: [
+        {
+          value: [4, 3, 10, 1, 8],
+          name: '关键词匹配',
+          symbol: 'circle',
+          symbolSize: 5,
+          lineStyle: { color: chartColors.amber, width: 2 },
+          itemStyle: { color: chartColors.amber },
+          areaStyle: { color: 'rgba(251, 191, 36, 0.08)' },
+        },
+        {
+          value: [9, 9, 8, 10, 6],
+          name: 'LLM 语义评分',
+          symbol: 'circle',
+          symbolSize: 5,
+          lineStyle: { color: chartColors.purple, width: 2 },
+          itemStyle: { color: chartColors.purple },
+          areaStyle: { color: 'rgba(167, 139, 250, 0.08)' },
+        }
+      ]
+    }],
+    animationDuration: 1500,
+    animationEasing: 'cubicOut',
+  });
+
+  // Cost Chart
+  const chartCost = echarts.init(document.getElementById('chart-cost'), null, { renderer: 'svg' });
+  chartCost.setOption({
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: chartColors.tooltipBg,
+      borderColor: 'rgba(99, 148, 210, 0.15)',
+      borderWidth: 1,
+      textStyle: { color: '#e2e8f0', fontFamily: 'Inter', fontSize: 12 },
+      axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(59,130,246,0.04)' } },
+      formatter: function(params) {
+        let html = `<div style="font-weight:600;margin-bottom:6px">${params[0].name}</div>`;
+        params.forEach(p => {
+          html += `<div style="display:flex;align-items:center;gap:6px;margin:2px 0">
+            <span style="width:8px;height:8px;border-radius:2px;background:${p.color};display:inline-block"></span>
+            ${p.seriesName}: <strong>$${p.value.toFixed(2)}</strong>/月
+          </div>`;
+        });
+        return html;
+      }
+    },
+    grid: {
+      left: 60,
+      right: 24,
+      top: 16,
+      bottom: 48,
+    },
+    xAxis: {
+      type: 'category',
+      data: ['gpt-4o-mini', 'DeepSeek', 'Claude Haiku', 'gpt-4o'],
+      axisLine: { lineStyle: { color: chartColors.gridLine } },
+      axisTick: { show: false },
+      axisLabel: { color: chartColors.axisLabel, fontFamily: 'JetBrains Mono', fontSize: 11 },
+    },
+    yAxis: {
+      type: 'value',
+      name: 'USD / 月',
+      nameTextStyle: { color: chartColors.axisLabel, fontFamily: 'Inter', fontSize: 11, padding: [0, 0, 8, 0] },
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: { lineStyle: { color: chartColors.gridLine } },
+      axisLabel: {
+        color: chartColors.axisLabel,
+        fontFamily: 'JetBrains Mono',
+        fontSize: 11,
+        formatter: '${value}'
+      },
+    },
+    series: [{
+      name: '月成本',
+      type: 'bar',
+      barWidth: '50%',
+      data: [
+        { value: 0.27, itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: chartColors.green }, { offset: 1, color: 'rgba(52,211,153,0.2)' }]) } },
+        { value: 0.12, itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: chartColors.blue }, { offset: 1, color: 'rgba(96,165,250,0.2)' }]) } },
+        { value: 0.48, itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: chartColors.purple }, { offset: 1, color: 'rgba(167,139,250,0.2)' }]) } },
+        { value: 4.50, itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: chartColors.amber }, { offset: 1, color: 'rgba(251,191,36,0.2)' }]) } },
+      ],
+      label: {
+        show: true,
+        position: 'top',
+        color: chartColors.axisLabel,
+        fontFamily: 'JetBrains Mono',
+        fontSize: 11,
+        formatter: '${c}'
+      },
+      itemStyle: { borderRadius: [6, 6, 0, 0] },
+    }],
+    animationDuration: 1200,
+    animationEasing: 'cubicOut',
+  });
+
+  // Resize handler
+  window.addEventListener('resize', () => {
+    chartComparison.resize();
+    chartCost.resize();
+  });
+
+  // Lazy init charts on scroll
+  ScrollTrigger.create({
+    trigger: '#chart-comparison',
+    start: 'top 80%',
+    once: true,
+    onEnter: () => chartComparison.resize(),
+  });
+  ScrollTrigger.create({
+    trigger: '#chart-cost',
+    start: 'top 80%',
+    once: true,
+    onEnter: () => chartCost.resize(),
+  });
+</script>
+</body>
+</html>
