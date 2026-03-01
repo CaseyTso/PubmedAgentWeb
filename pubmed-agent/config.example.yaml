@@ -1,0 +1,79 @@
+# ============================================================
+# PubMed Literature Monitor Agent - Configuration
+# ============================================================
+# Copy this file to config.yaml and fill in your values.
+
+# --- NCBI / PubMed Settings ---
+pubmed:
+  api_key: ""                    # Optional but recommended. Get one at https://www.ncbi.nlm.nih.gov/account/
+  email: "your@email.com"       # Required by NCBI policy
+  tool_name: "pubmed_monitor"   # Identifies your app to NCBI
+  search_days: 2                # How many days back to search (reldate). Use 2 to avoid boundary misses.
+  batch_size: 200               # Records per EFetch call (max 10000, recommended 200-500)
+
+# --- Research Profile ---
+# Define your research interests. The agent uses these to build PubMed queries
+# and to instruct the LLM for relevance scoring.
+research:
+  # PubMed search query (supports boolean operators, MeSH terms, field tags)
+  # Docs: https://pubmed.ncbi.nlm.nih.gov/help/#search-tags
+  query: >-
+    (CAR-T[tiab] OR "chimeric antigen receptor"[tiab] OR CAR T-cell[tiab])
+    AND
+    ("cytokine release syndrome"[tiab] OR CRS[tiab] OR "cytokine storm"[tiab])
+
+  # Natural language description of your research focus.
+  # This is sent to the LLM to judge article relevance.
+  description: >-
+    My research focuses on the pathogenesis of cytokine release syndrome (CRS)
+    induced by CAR-T cell therapy. I am interested in:
+    - Molecular mechanisms underlying CRS (IL-6, IL-1, TNF-alpha, IFN-gamma signaling)
+    - The role of macrophages, monocytes, and endothelial cells in CRS
+    - Biomarkers for predicting CRS severity
+    - Novel therapeutic strategies for CRS management (tocilizumab, anakinra, ruxolitinib, etc.)
+    - Animal models of CAR-T-induced CRS
+    - Clinical studies reporting CRS outcomes and risk factors
+    I am NOT interested in: manufacturing/production of CAR-T cells, purely clinical
+    efficacy/response rate studies without CRS focus, reviews with no new mechanistic insight.
+
+  # Minimum relevance score (0-10) to include an article in the notification.
+  min_score: 6
+
+# --- LLM Settings ---
+llm:
+  provider: "openai"             # "openai" or "compatible" (any OpenAI-compatible endpoint)
+  api_key: ""                    # Your LLM API key
+  base_url: ""                   # Leave empty for OpenAI. Set for compatible APIs (e.g., https://api.deepseek.com/v1)
+  model: "gpt-4o-mini"          # Model to use. gpt-4o-mini is cost-effective. Also works with deepseek-chat, etc.
+  temperature: 0.1               # Low temperature for consistent scoring
+  max_tokens: 512                # Max tokens per scoring response
+
+# --- Notification Settings ---
+notify:
+  # Choose your platform: "feishu", "wecom", or "both"
+  platform: "feishu"
+
+  feishu:
+    webhook_url: ""              # https://open.feishu.cn/open-apis/bot/v2/hook/<TOKEN>
+    secret: ""                   # Optional: signing secret for signature verification
+
+  wecom:
+    webhook_url: ""              # https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<KEY>
+
+  # Maximum articles to include per notification (to avoid overly long messages)
+  max_articles: 20
+
+# --- Scheduler ---
+schedule:
+  cron: "0 8 * * *"             # Run daily at 8:00 AM (local time)
+  timezone: "Asia/Shanghai"
+
+# --- Storage ---
+storage:
+  # Path to SQLite database for deduplication (tracking already-seen PMIDs)
+  db_path: "data/seen_articles.db"
+
+# --- Logging ---
+logging:
+  level: "INFO"                  # DEBUG, INFO, WARNING, ERROR
+  file: "logs/agent.log"
